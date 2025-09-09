@@ -151,7 +151,7 @@ def extract_equipamento_principal(page2) -> Dict[str,str]:
     Lê as linhas da seção 'EQUIPAMENTOS NO CLIENTE' (formato impresso pelo app)
     e retorna o PRIMEIRO item: tipo / numero_serie / modelo / status
     """
-    out = {"tipo":"","numero_serie":"","modelo":"","status":""}
+    out = {"tipo":"","N° de Serie":"","modelo":"","status":""}
     title = search_first(page2, ["EQUIPAMENTOS NO CLIENTE","Equipamentos no Cliente"])
     if not title:
         return out
@@ -172,7 +172,7 @@ def extract_equipamento_principal(page2) -> Dict[str,str]:
             return clean_value(m.group(1)) if m else ""
         out = {
             "tipo": pick(r"(?:Tipo)"),
-            "numero_serie": pick(r"(?:S/?N)"),
+            "N° de Serie": pick(r"(?:S/N)"),
             "modelo": pick(r"(?:Mod)"),
             "status": pick(r"(?:Status)"),
         }
