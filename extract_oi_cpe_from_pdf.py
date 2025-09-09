@@ -175,7 +175,7 @@ def build_mask(
     m_prod = re.search(r"\bProdutivo:\s*([^\n\r]+)", observacoes, flags=re.I)
     produtivo = (m_prod.group(1).strip() if m_prod else "")
 
-    m_sup = re.search(r"acompanhado pelo analista\s+([A-Za-zÀ-ÿ\s]+)", observacoes, flags=re.I)
+    m_sup = re.search(r"acompanhado pelo(a) analista\s+([A-Za-zÀ-ÿ\s]+)", observacoes, flags=re.I)
     suporte = (m_sup.group(1).strip() if m_sup else suporte_mam)
 
     m_ba = re.search(r"\bBA:\s*([A-Za-z0-9\-_/]+)", acao or "", flags=re.I)
