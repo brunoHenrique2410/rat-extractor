@@ -1,349 +1,201 @@
-# extract_oi_cpe_from_pdf.py
-# Extrai dados da RAT OI CPE e imprime a máscara ###ENCERRAMENTO DE CPE###
-# Ajuste: serial não confunde com "EQUIPAMENTOS" (filtro de candidatos + prioridade S/N)
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Extrai dados do RAT OI CPE gerado com blindagem [[FIELD:key=value]]
+e imprime a máscara de ENCERRAMENTO DE CPE.
 
-import re, fitz
-from typing import List, Tuple, Optional, Dict
+Requisitos:
+  - PyMuPDF (fitz)
+  - (Opcional) pytesseract + tesseract-ocr se quiser fallback de OCR
+Uso:
+  python extract_oi_cpe_to_mask.py "RAT_OI_CPE_13456789.pdf"
+"""
 
-# -------- utils básicos --------
-def words(page) -> List[Tuple[float,float,float,float,str,int,int,int]]:
-    return page.get_text("words")
+import sys, re, os
+from typing import Dict, List
+import fitz  # PyMuPDF
 
-def search_first(page, labels) -> Optional[fitz.Rect]:
-    if isinstance(labels, str): labels=[labels]
-    for t in labels:
-        try:
-            hits = page.search_for(t)
-            if hits: return hits[0]
-        except Exception:
-            pass
-    return None
+# --------- (opcional) OCR fallback ----------
+try:
+    import pytesseract
+    from PIL import Image
+    OCR_AVAILABLE = True
+except Exception:
+    OCR_AVAILABLE = False
 
-def search_all(page, labels) -> List[fitz.Rect]:
-    if isinstance(labels, str): labels=[labels]
-    out=[]
-    for t in labels:
-        try: out.extend(page.search_for(t))
-        except Exception: pass
-    return out
 
-def text_in_rect(page, rect: fitz.Rect) -> str:
-    ws = [w for w in words(page) if fitz.Rect(w[0],w[1],w[2],w[3]).intersects(rect)]
-    ws.sort(key=lambda w: (w[1], w[0]))
-    return " ".join(w[4] for w in ws).strip()
+FIELD_RX = re.compile(r"\[\[FIELD:([^=\]]+)=([^\]]*)\]\]")
 
-def grab_right_of(page, label_variants, dx=6, dy=1, w=420, h=24) -> str:
-    r = search_first(page, label_variants)
-    if not r: return ""
-    rect = fitz.Rect(r.x1 + dx, r.y0 + dy, r.x1 + dx + w, r.y0 + dy + h)
-    return text_in_rect(page, rect)
+def read_all_text(doc: fitz.Document) -> str:
+    text_parts: List[str] = []
+    for pno in range(doc.page_count):
+        text_parts.append(doc[pno].get_text("text") or "")
+    return "\n".join(text_parts)
 
-def nearest_word(page, x, y, max_dist=10) -> Optional[str]:
-    cand=[]
-    for w in words(page):
-        cx=(w[0]+w[2])/2; cy=(w[1]+w[3])/2
-        d2=(cx-x)**2+(cy-y)**2
-        if d2<=max_dist**2: cand.append((d2,w[4]))
-    if not cand: return None
-    cand.sort(key=lambda t:t[0])
-    return cand[0][1]
-
-# -------- limpeza --------
-UNDERLINE_PAT = re.compile(r"[_]{2,}")
-DUP_SPACES    = re.compile(r"\s{2,}")
-QUOTES_PAT    = re.compile(r'^[\'"]+|[\'"]+$')
+def parse_fields_from_text(txt: str) -> Dict[str, str]:
+    """
+    Junta múltiplos FIELDs com a mesma chave na ordem em que aparecem.
+    """
+    fields = {}
+    order_seen = []
+    for m in FIELD_RX.finditer(txt):
+        k = m.group(1).strip()
+        v = (m.group(2) or "").strip()
+        if k not in fields:
+            fields[k] = v
+            order_seen.append(k)
+        else:
+            # concatena com espaço
+            if v:
+                sep = " " if (fields[k] and not fields[k].endswith(" ")) else ""
+                fields[k] = f"{fields[k]}{sep}{v}"
+    return fields
 
 def clean_value(s: str) -> str:
-    if not s: return ""
-    s = s.strip()
-    s = QUOTES_PAT.sub("", s)
-    s = s.replace("\u00A0"," ")
-    s = re.sub(r"\b[Bb]ilhete\b","", s)
-    s = re.sub(r"\b[Cc]ontato\b","", s)
-    s = UNDERLINE_PAT.sub(" ", s)
-    s = DUP_SPACES.sub(" ", s).strip(" -:;")
-    return s
-
-def extract_first_digits(s: str) -> str:
-    if not s: return ""
-    m = re.search(r"\b(\d{4,})\b", s)
-    return m.group(1) if m else clean_value(s)
-
-def only_digits_or_clean(s: str) -> str:
-    s2 = clean_value(s)
-    m = re.search(r"\b(\d{5,})\b", s2)
-    return m.group(1) if m else s2
-
-# -------- extrações específicas --------
-def extract_numero_chamado(page1) -> str:
-    for labels in [["Número do Bilhete","Numero do Bilhete"],
-                   ["Designação do Circuito","Designacao do Circuito"]]:
-        raw = grab_right_of(page1, labels, dx=8, dy=1, w=420, h=24)
-        val = extract_first_digits(raw)
-        if val: return val
-    return ""
-
-def extract_identificacao_pagina1(page1) -> Dict[str,str]:
-    out = {"tecnico":"", "cliente_ciente":"", "contato":"", "aceitacao":"", "teste_final":""}
-    out["tecnico"] = clean_value(grab_right_of(page1, ["Técnico","Tecnico"], dx=8, dy=1))
-    out["cliente_ciente"] = clean_value(grab_right_of(page1, ["Cliente Ciente","Cliente  Ciente"], dx=8, dy=1))
-    out["contato"] = only_digits_or_clean(grab_right_of(page1, ["Contato"], dx=8, dy=1))
-    out["aceitacao"] = clean_value(grab_right_of(page1,
-        ["Aceitação do serviço pelo responsável","Aceitacao do servico pelo responsavel"], dx=8, dy=1))
-
-    wan_label = search_first(page1, ["Teste de conectividade WAN","Teste final com equipamento do cliente"])
-    if wan_label:
-        pos_S  = wan_label.x1 + 138
-        pos_N  = wan_label.x1 + 165
-        pos_NA = wan_label.x1 + 207
-        ymark  = wan_label.y0 + 11
-        hit_S  = (nearest_word(page1, pos_S,  ymark) or "").upper()
-        hit_N  = (nearest_word(page1, pos_N,  ymark) or "").upper()
-        hit_NA = (nearest_word(page1, pos_NA, ymark) or "").upper()
-        if hit_S == "X": out["teste_final"]="S"
-        elif hit_N == "X": out["teste_final"]="N"
-        elif hit_NA == "X": out["teste_final"]="NA"
-    return out
-
-def extract_observacoes(page) -> str:
-    r = search_first(page, ["OBSERVAÇÕES","Observacoes","Observações"])
-    if not r: return ""
-    rect = fitz.Rect(r.x0, r.y1+20, r.x0+540, r.y1+20+240)
-    return clean_value(text_in_rect(page, rect))
-
-def extract_problema(page) -> str:
-    r = search_first(page, ["PROBLEMA ENCONTRADO","Problema Encontrado"])
-    if not r: return ""
-    rect = fitz.Rect(r.x0, r.y1+20, r.x0+540, r.y1+20+240)
-    return clean_value(text_in_rect(page, rect))
-
-def extract_acao(page) -> str:
-    r = search_first(page, ["AÇÃO CORRETIVA","Acao Corretiva","Ação Corretiva"])
-    if not r: return ""
-    rect = fitz.Rect(r.x0, r.y1+20, r.x0+540, r.y1+20+160)
-    return clean_value(text_in_rect(page, rect))
-
-# ---- equipamento (robusto) ----
-MODEL_KEYWORDS = ["synway","aligera","syn way","syn-way"]
-STATUS_CHOICES = [
-    "equipamento no local","instalado pelo técnico","retirado pelo técnico",
-    "spare técnico","técnico não levou equipamento",
-    # variações sem acento
-    "instalado pelo tecnico","retirado pelo tecnico","spare tecnico","tecnico nao levou equipamento"
-]
-# Palavras que NUNCA podem virar serial
-SN_STOPWORDS = {
-    "EQUIPAMENTOS","NO","CLIENTE","EQUIPAMENTOSNOCLIENTE","STATUS","TIPO","MOD","MODELO","ITEM",
-    "PROBLEMA","OBSERVAÇÕES","OBSERVACOES","ACAO","AÇÃO","CORRETIVA","S","N","NA"
-}
-
-def _looks_like_serial(token: str) -> bool:
-    """Serial precisa ter pelo menos 6 chars e conter ALGUM dígito; e não ser stopword."""
-    if not token: return False
-    t = token.strip().upper()
-    if len(t) < 6: return False
-    if t in SN_STOPWORDS: return False
-    if not re.search(r"\d", t):  # precisa ter dígito
-        return False
-    # evita tokens com muitos separadores
-    if t.count("|")>0: return False
-    return True
-
-def _extract_equipment_block_from_page(page) -> Dict[str,str]:
     """
-    1) Tenta linha única "Tipo: ... | S/N: ... | Mod: ... | Status: ..."
-    2) Se não achar, faz fallback por regex com filtros (serial com dígito etc).
+    Remove underscores exagerados, espaços duplos, etc.
     """
-    out = {"tipo":"","numero_serie":"","modelo":"","status":""}
-    anchors = search_all(page, ["EQUIPAMENTOS NO CLIENTE","Equipamentos no Cliente"])
-    if not anchors:
-        return out
+    if not s:
+        return ""
+    s = s.replace("\u00a0", " ")  # NBSP
+    # Muitas RATs têm linhas com ________ para preenchimento manual:
+    s = re.sub(r"[_]{2,}", "", s)
+    s = re.sub(r"\s{2,}", " ", s)
+    return s.strip()
 
-    for anc in anchors:
-        # 1) Linha única (scan linhas virtuais)
-        base_x = anc.x0
-        TOP_OFFSET = 36
-        ROW_DY     = 26
-        for row_idx in range(0, 14):
-            y = anc.y1 + TOP_OFFSET + row_idx*ROW_DY
-            band = fitz.Rect(base_x, y-4, base_x+560, y+18)
-            line = text_in_rect(page, band)
-            if not line: continue
+def build_mask(fields: Dict[str, str]) -> str:
+    # Leitura segura dos campos
+    chamado        = clean_value(fields.get("numero_chamado",""))
+    cliente        = clean_value(fields.get("cliente",""))
+    tecnico        = clean_value(fields.get("tecnico",""))
+    cliente_ciente = clean_value(fields.get("cliente_ciente",""))
+    contato        = clean_value(fields.get("contato",""))
+    suporte_mam    = clean_value(fields.get("suporte_mam",""))
+    teste_final    = clean_value(fields.get("teste_final","")).upper()  # S/N/NA
+    produtivo      = clean_value(fields.get("produtivo",""))
+    ba_num         = clean_value(fields.get("ba_num",""))
+    motivo_imp     = clean_value(fields.get("motivo_improdutivo",""))
+    obs            = clean_value(fields.get("observacoes",""))
 
-            def pick(tag):
-                m = re.search(tag + r"\s*:\s*([^|]+)", line, flags=re.I)
-                return clean_value(m.group(1)) if m else ""
-            tipo   = pick(r"(?:Tipo)")
-            s_n    = pick(r"(?:S/?N)")
-            modelo = pick(r"(?:Mod|Modelo)")
-            status = pick(r"(?:Status)")
+    # Equipamento (primeiro item blindado)
+    modelo         = clean_value(fields.get("equip_modelo",""))
+    sn             = clean_value(fields.get("equip_sn",""))
+    status         = clean_value(fields.get("equip_status",""))
 
-            if any([tipo, s_n, modelo, status]):
-                # valida o serial
-                if s_n and not _looks_like_serial(s_n):
-                    s_n = ""
-                out["tipo"]=tipo
-                out["numero_serie"]=s_n
-                out["modelo"]=modelo
-                out["status"]=status
-                # se encontrou um serial válido, retorna; senão continua tentando
-                if out["numero_serie"] or any([modelo,status,tipo]):
-                    return out
-
-        # 2) Fallback: coletar tokens na área ampla
-        area = fitz.Rect(anc.x0, anc.y1+10, anc.x0+560, anc.y1+380)
-        txt  = text_in_rect(page, area)
-        low  = txt.lower()
-
-        # modelo por keywords
-        modelo=""
-        for kw in MODEL_KEYWORDS:
-            if kw in low:
-                modelo = "SynWay" if "syn" in kw else "aligera"
-                break
-
-        # status por choices
-        status=""
-        for ch in STATUS_CHOICES:
-            if ch in low:
-                status = ch
-                break
-        if status == "instalado pelo tecnico": status = "instalado pelo técnico"
-        if status == "retirado pelo tecnico": status = "retirado pelo técnico"
-        if status == "spare tecnico": status = "spare técnico"
-
-        # serial: prioriza S/N, depois candidatos válidos (com dígito)
-        numero_serie = ""
-        m_sn = re.search(r"S/?N[:\s\-]*([A-Z0-9\-]{5,})", txt, flags=re.I)
-        if m_sn:
-            cand = clean_value(m_sn.group(1))
-            if _looks_like_serial(cand):
-                numero_serie = cand
-        if not numero_serie:
-            # pega todos tokens alfanum >=6 e filtra com dígito + não-stopword
-            cands = re.findall(r"\b([A-Z0-9\-]{6,})\b", txt, flags=re.I)
-            cands = [c for c in cands if _looks_like_serial(c)]
-            if cands:
-                numero_serie = cands[0]
-
-        # tipo
-        m_tipo = re.search(r"Tipo\s*:\s*([^\n|]+)", txt, flags=re.I)
-        tipo = clean_value(m_tipo.group(1)) if m_tipo else ""
-
-        if any([tipo,numero_serie,modelo,status]):
-            out["tipo"]=tipo; out["numero_serie"]=numero_serie; out["modelo"]=modelo; out["status"]=status
-            return out
-
-    return out
-
-def extract_equipamento_principal(doc) -> Dict[str,str]:
-    """Procura o bloco de equipamentos em TODAS as páginas, retorna o primeiro válido."""
-    for pno in range(doc.page_count):
-        page = doc[pno]
-        info = _extract_equipment_block_from_page(page)
-        # retorna assim que tiver ao menos serial ou status/modelo
-        if info.get("numero_serie") or info.get("modelo") or info.get("status") or info.get("tipo"):
-            return info
-    return {"tipo":"","numero_serie":"","modelo":"","status":""}
-
-# -------- máscara --------
-def build_mask(
-    numero_chamado: str,
-    equip: Dict[str,str],
-    tecnico: str,
-    cliente_ciente: str,
-    contato: str,
-    suporte_mam_hint: str,
-    teste_final: str,
-    observacoes_raw: str,
-    problema: str,
-    acao: str,
-) -> str:
-    obs = observacoes_raw or ""
-
-    # Produtivo
-    m_prod = re.search(r"\bProdutivo:\s*([^\n\r]+)", obs, flags=re.I)
-    produtivo = clean_value(m_prod.group(1)) if m_prod else ""
-
-    # Suporte
-    m_sup = re.search(r"acompanhado pelo analista\s+([A-Za-zÀ-ÿ\s]+)", obs, flags=re.I)
-    suporte_mam = clean_value(m_sup.group(1)) if m_sup else clean_value(suporte_mam_hint)
-
-    # BA
-    m_ba = re.search(r"\bBA:\s*([A-Za-z0-9\-_/]+)", acao or "", flags=re.I)
-    ba_num = clean_value(m_ba.group(1)) if m_ba else ""
-
-    # Descrição sem a linha de produtivo
-    obs_clean = re.sub(r"(?im)^.*\bProdutivo:\s*[^\n\r]+$", "", obs).strip()
-
-    tf = (teste_final or "").upper()
-    tf_answer = "sim" if tf=="S" else ("não" if tf=="N" else "não")
-    testado_com = ("Teste final realizado com o CPE do cliente conectado ao circuito, validação de camada 3 concluída."
-                   if tf_answer=="sim" else
-                   "Sem teste final com o equipamento do cliente no momento do atendimento.")
-
-    if produtivo.lower().startswith("sim-com ba") and ba_num:
-        produtivo_fmt = f"sim-com BA ({ba_num})"
+    # Texto padrão para "TESTADO NA REDE GERENCIADA COM"
+    if teste_final == "S":
+        testado_msg = "Teste final realizado com o CPE do cliente conectado ao circuito, validação de camada 3 concluída."
     else:
-        produtivo_fmt = produtivo
+        testado_msg = "Sem teste final com o CPE do cliente conectado ao circuito no momento do atendimento."
 
-    modelo = clean_value(equip.get("modelo") or "")
-    serial = clean_value(equip.get("numero_serie") or "")
-    status = clean_value(equip.get("status") or "")
-    tecnico = clean_value(tecnico)
-    cliente_ciente = clean_value(cliente_ciente)
-    contato = only_digits_or_clean(contato)
-    numero_chamado = extract_first_digits(numero_chamado)
+    # PRODUTIVO linha
+    prod_line = produtivo
+    if produtivo == "sim-com BA":
+        if ba_num:
+            prod_line = f"sim-com BA – BA {ba_num}"
+        else:
+            prod_line = "sim-com BA"
+    elif produtivo == "não-improdutivo" and motivo_imp:
+        # Mantemos só o PRODUTIVO limpo; motivo vai para descrição (se quiser)
+        pass
 
-    lines=[]
-    lines.append("###ENCERRAMENTO DE CPE###")
-    lines.append("")
-    lines.append("&&& MAMINFO")
-    lines.append("")
-    lines.append(f"Nº DA RAT: {numero_chamado}")
-    lines.append(f"CIRCUITO: {numero_chamado}")
-    lines.append(f"MODELO DO CPE: {modelo}")
-    lines.append(f"Nº DE SÉRIE DO CPE: {serial}")
+    # “acompanhado pelo analista X” (gruda no PRODUTIVO como solicitado)
+    if suporte_mam:
+        prod_line = f"{prod_line} - acompanhado pelo analista {suporte_mam}"
+
+    # DESCRIÇÃO (deixa OBS apenas; se quiser anexar motivo BA / improdutivo aqui, ajuste)
+    descricao = obs
+
+    # Montagem da máscara
+    lines = [
+        "###ENCERRAMENTO DE CPE###",
+        "",
+        "&&& MAMINFO",
+        "",
+        f"Nº DA RAT: {chamado}",
+        f"CIRCUITO: {chamado}",
+        f"MODELO DO CPE: {modelo}",
+        f"Nº DE SÉRIE DO CPE: {sn}",
+    ]
+    # status do equipamento embaixo do serial (se houver)
     if status:
-        lines.append(f"Status do equipamento: {status}")
-    lines.append(f"CIENTE NO LOCAL: SR(A) {cliente_ciente}")
-    lines.append(f"SUPORTE PELO ANALISTA: {suporte_mam}")
-    lines.append(f"REALIZADO PELO TÉCNICO: {tecnico}")
-    lines.append(f"FOI REALIZADO TESTE FINAL COM O EQUIPAMENTO DO CLIENTE? {tf_answer}")
-    lines.append(f"TESTADO NA REDE GERENCIADA COM: {testado_com}")
-    lines.append(f"CONTATO: {contato}")
-    lines.append("CONFIGURAÇÕES EXECUTADAS:")
-    lines.append(f"PRODUTIVO: {produtivo_fmt}")
-    lines.append(f"DESCRIÇÃO: {obs_clean}")
+        lines.append(status)
+
+    lines.extend([
+        f"CIENTE NO LOCAL: SR(A) {cliente_ciente}",
+        f"SUPORTE PELO ANALISTA: {suporte_mam}",
+        f"REALIZADO PELO TÉCNICO: {tecnico}",
+        f"FOI REALIZADO TESTE FINAL COM O EQUIPAMENTO DO CLIENTE? {'sim' if teste_final=='S' else 'não'}",
+        f"TESTADO NA REDE GERENCIADA COM: {testado_msg}",
+        f"CONTATO: {contato}",
+        "CONFIGURAÇÕES EXECUTADAS:",
+        f"PRODUTIVO: {prod_line}",
+        f"DESCRIÇÃO: {descricao}",
+        ""
+    ])
     return "\n".join(lines)
 
-# -------- API pública --------
-def extract_from_pdf(path: str) -> str:
-    doc = fitz.open(path)
+# --------- (Opcional) OCR fallback para um ou outro campo ----------
+def try_ocr_fallback(pdf_path: str, fields: Dict[str,str]) -> Dict[str,str]:
+    """
+    Se quiser, tente OCR em 1–2 páginas para garimpar algo que faltou.
+    Mantém simples por padrão.
+    """
+    if not OCR_AVAILABLE:
+        return fields
+
     try:
-        page1 = doc[0]
-        numero = extract_numero_chamado(page1)
-        ident  = extract_identificacao_pagina1(page1)
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return fields
 
-        equip  = extract_equipamento_principal(doc)
-
-        page_obs = doc[1] if doc.page_count>=2 else doc[0]
-        obs  = extract_observacoes(page_obs) or extract_observacoes(page1)
-        prob = extract_problema(page_obs)    or extract_problema(page1)
-        acao = extract_acao(page_obs)        or extract_acao(page1)
-
-        mask = build_mask(
-            numero_chamado=numero,
-            equip=equip,
-            tecnico=ident.get("tecnico",""),
-            cliente_ciente=ident.get("cliente_ciente",""),
-            contato=ident.get("contato",""),
-            suporte_mam_hint="",
-            teste_final=ident.get("teste_final",""),
-            observacoes_raw=obs,
-            problema=prob,
-            acao=acao,
-        )
-        return mask
+    # Ex.: tenta só a primeira página
+    try:
+        page = doc[0]
+        pix = page.get_pixmap(dpi=200)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        text = pytesseract.image_to_string(img, lang="por")
+        # Exemplo besta: se não veio contato via FIELD, tenta OCR do padrão "Contato"
+        if not fields.get("contato"):
+            m = re.search(r"Contato[:\s]*([^\n\r]+)", text, re.I)
+            if m:
+                fields["contato"] = clean_value(m.group(1))
+    except Exception:
+        pass
     finally:
+        try: doc.close()
+        except: pass
+
+    return fields
+
+# ====================== CLI =========================
+def main():
+    if len(sys.argv) < 2:
+        print("Uso: python extract_oi_cpe_to_mask.py <arquivo.pdf>")
+        sys.exit(1)
+
+    pdf_path = sys.argv[1]
+    if not os.path.exists(pdf_path):
+        print(f"Arquivo não encontrado: {pdf_path}")
+        sys.exit(2)
+
+    try:
+        doc = fitz.open(pdf_path)
+        full_text = read_all_text(doc)
         doc.close()
+    except Exception as e:
+        print(f"Falha ao abrir PDF: {e}")
+        sys.exit(3)
+
+    fields = parse_fields_from_text(full_text)
+
+    # (Opcional) fallback OCR muito leve, só se algo essencial estiver vazio
+    essentials = ["numero_chamado", "cliente_ciente", "tecnico", "contato"]
+    if any(not fields.get(k) for k in essentials):
+        fields = try_ocr_fallback(pdf_path, fields)
+
+    mask = build_mask(fields)
+    print(mask)
+
+if __name__ == "__main__":
+    main()
