@@ -45,10 +45,10 @@ def _clean(s: str) -> str:
 
 def _build_mask(fields: Dict[str, str]) -> str:
     chamado        = _clean(fields.get("numero_chamado",""))
-    cliente        = _clean(fields.get("cliente",""))
+    cliente        = _clean(fields.get("responsavel_local",""))
     tecnico        = _clean(fields.get("tecnico",""))
-    cliente_ciente = _clean(fields.get("cliente_ciente",""))
-    contato        = _clean(fields.get("contato",""))
+    cliente_ciente = _clean(fields.get("cliente_validador",""))
+    contato        = _clean(fields.get("validador_tel",""))
     suporte_mam    = _clean(fields.get("suporte_mam",""))
     teste_final    = _clean(fields.get("teste_final","")).upper()  # S/N/NA
     produtivo      = _clean(fields.get("produtivo",""))
@@ -94,12 +94,12 @@ def _build_mask(fields: Dict[str, str]) -> str:
         lines.append(status)
 
     lines.extend([
-        f"CLIENTE NO LOCAL: SR(A) {cliente_ciente}",
+        f"CLIENTE NO LOCAL: SR(A) {cliente_validador}",
         f"SUPORTE PELO ANALISTA: {suporte_mam}",
         f"REALIZADO PELO TÉCNICO: {tecnico}",
         f"FOI REALIZADO TESTE FINAL COM O EQUIPAMENTO DO CLIENTE? {teste_simnao}",
         f"TESTADO NA REDE GERENCIADA COM: {testado_msg}",
-        f"CONTATO: {contato}",
+        f"CONTATO: {validador_tel}",
         "CONFIGURAÇÕES EXECUTADAS:",
         f"PRODUTIVO: {prod_line}",
         f"DESCRIÇÃO: {descricao}",
