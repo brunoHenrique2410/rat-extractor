@@ -94,7 +94,7 @@ def _build_mask(fields: Dict[str, str]) -> str:
         lines.append(status)
 
     lines.extend([
-        f"CIENTE NO LOCAL: SR(A) {cliente_ciente}",
+        f"CLIENTE NO LOCAL: SR(A) {cliente_ciente}",
         f"SUPORTE PELO ANALISTA: {suporte_mam}",
         f"REALIZADO PELO TÉCNICO: {tecnico}",
         f"FOI REALIZADO TESTE FINAL COM O EQUIPAMENTO DO CLIENTE? {teste_simnao}",
